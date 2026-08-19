@@ -575,7 +575,6 @@ def delete_bot_callback(call):
   
   user_bots = data.get(uid, {}).get("bots", {})
   
-  # اگر در دیتابیس ثبت نشده بود، از روی فایل‌های موجود در پوشه شناسایی کن
   if not user_bots:
     legacy_files = [f for f in os.listdir(USER_BOTS_DIR) if f.startswith(f"{uid}_") and f.endswith(".py")]
     if legacy_files:
@@ -981,11 +980,9 @@ def manage_score(message):
 
 
 def check_code_syntax(file_path):
-  """بررسی صحت سینتکس فایل پایتون پیش از اجرا"""
   try:
     with open(file_path, "r", encoding="utf-8") as f:
       code_content = f.read()
-    
     compile(code_content, file_path, "exec")
     return True, None
   except Exception as e:
@@ -1015,8 +1012,13 @@ def handle_docs_from_step(message):
     return
 
   file_id = message.document.file_id
-  file_name = message.document.file_name.replace(".py", "")
+  raw_file_name = message.document.file_name.replace(".py", "")
   
+  # اصلاح نام فایل برای جلوگیری از داشتن فاصله و کاراکترهای مشکل‌ساز در Callback Data
+  file_name = "".join([c if c.isalnum() or c == '_' else '_' for c in raw_file_name])
+  if not file_name:
+    file_name = "bot"
+
   bot_unique_id = f"{uid}_{file_name}"
 
   file_info = bot.get_file(file_id)
@@ -1048,7 +1050,7 @@ def handle_docs_from_step(message):
 
   expire_time = time.time() + duration
   data[uid]["bots"][bot_unique_id] = {
-      "file_name": file_name,
+      "file_name": raw_file_name,
       "file_id": file_id,
       "expire_time": expire_time
   }
@@ -1062,7 +1064,7 @@ def handle_docs_from_step(message):
     
   save_data(data)
 
-  success_text = f"🚀 **تبریک! ربات ({file_name}) با موفقیت آنلاین و روشن شد** ✨"
+  success_text = f"🚀 **تبریک! ربات ({raw_file_name}) با موفقیت آنلاین و روشن شد** ✨"
   bot.send_message(message.chat.id, success_text, reply_markup=get_main_menu(lang), parse_mode="Markdown")
 
   try:
@@ -1070,7 +1072,7 @@ def handle_docs_from_step(message):
         chat_id=int(uid),
         text=(
             "🤖 **اطلاعیه مهم سیستم:**\n\n"
-            f"ربات شما ({file_name}) با موفقیت توسط **ریس شاهد** آنلاین و روی سرور فعال گردید! ✨\n\n"
+            f"ربات شما ({raw_file_name}) با موفقیت توسط **ریس شاهد** آنلاین و روی سرور فعال گردید! ✨\n\n"
             "💬 اگر می‌خواهید ربات‌های بیشتری بسازید یا سفارشی‌سازی کنید، لطفاً از طریق بخش **پشتیبانی** با ریس شاهد در ارتباط باشید."
         ),
         parse_mode="Markdown"
