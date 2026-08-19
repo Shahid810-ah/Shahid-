@@ -176,7 +176,7 @@ def send_main_menu(chat_id, lang="dr"):
   bot.send_message(chat_id, t["welcome_menu"], reply_markup=get_main_menu(lang), parse_mode="Markdown")
 
 
-# ترد بررسی‌کننده زمان انقضای ربات‌ها (خاموش‌سازی خودکار)
+# ترد بررسی‌کننده زمان انقضای ربات‌ها (خاموش‌سازی خودکار چندگانه)
 def background_expiration_checker():
   while True:
     try:
@@ -185,38 +185,41 @@ def background_expiration_checker():
       updated = False
 
       for uid, user_info in list(data.items()):
-        expire_time = user_info.get("expire_time")
-        if expire_time and current_time >= expire_time:
-          path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
-          
-          if uid in active_user_processes:
-            try:
-              active_user_processes[uid].terminate()
-              del active_user_processes[uid]
-            except Exception as e:
-              print(f"Error terminating expired process for {uid}: {e}")
+        bots_dict = user_info.get("bots", {})
+        if bots_dict:
+          for b_unique_id, b_data in list(bots_dict.items()):
+            expire_time = b_data.get("expire_time")
+            if expire_time and current_time >= expire_time:
+              path = os.path.join(USER_BOTS_DIR, f"{b_unique_id}_bot.py")
+              
+              if b_unique_id in active_user_processes:
+                try:
+                  active_user_processes[b_unique_id].terminate()
+                  del active_user_processes[b_unique_id]
+                except Exception as e:
+                  print(f"Error terminating expired process for {b_unique_id}: {e}")
 
-          if os.path.exists(path):
-            try:
-              os.remove(path)
-            except Exception as e:
-              print(f"Error removing expired file for {uid}: {e}")
+              if os.path.exists(path):
+                try:
+                  os.remove(path)
+                except Exception as e:
+                  print(f"Error removing expired file for {b_unique_id}: {e}")
 
-          user_info["file_id"] = None
-          user_info["expire_time"] = None
-          updated = True
+              del bots_dict[b_unique_id]
+              updated = True
 
-          lang = user_info.get("lang", "dr")
-          expired_msg = (
-              "⏳ **مدت زمان فعال‌سازی ربات شما به پایان رسید و ربات خاموش شد.**\n\n"
-              "برای روشن کردن مجدد آن، لطفاً از منوی «آنلاین کردن ربات» اقدام فرمایید."
-          ) if lang != "en" else (
-              "⏳ **Your bot's active duration has expired and it has been stopped.**"
-          )
-          try:
-            bot.send_message(int(uid), expired_msg, parse_mode="Markdown")
-          except:
-            pass
+              lang = user_info.get("lang", "dr")
+              b_name = b_data.get("file_name", "ربات")
+              expired_msg = (
+                  f"⏳ **مدت زمان فعال‌سازی ربات ({b_name}) به پایان رسید و ربات خاموش شد.**\n\n"
+                  "برای روشن کردن مجدد آن، لطفاً از منوی «آنلاین کردن ربات» اقدام فرمایید."
+              ) if lang != "en" else (
+                  f"⏳ **Your bot's ({b_name}) active duration has expired and it has been stopped.**"
+              )
+              try:
+                bot.send_message(int(uid), expired_msg, parse_mode="Markdown")
+              except:
+                pass
 
       if updated:
         save_data(data)
@@ -235,7 +238,7 @@ def start(message):
   is_new_user = uid not in data
 
   if is_new_user:
-    data[uid] = {"score": 0, "lang": None, "file_id": None, "expire_time": None}
+    data[uid] = {"score": 0, "lang": None, "bots": {}}
     if len(args) > 1:
       referrer_id = args[1]
       if referrer_id in data and referrer_id != uid:
@@ -303,7 +306,7 @@ def set_language_callback(call):
   data = load_data()
   is_new_user = uid not in data
   if is_new_user:
-    data[uid] = {"score": 0, "file_id": None, "expire_time": None}
+    data[uid] = {"score": 0, "bots": {}}
   data[uid]["lang"] = selected_lang
   save_data(data)
 
@@ -354,15 +357,15 @@ def my_info_callback(call):
     return
 
   if uid not in data:
-    data[uid] = {"score": 0, "lang": lang, "file_id": None, "expire_time": None}
+    data[uid] = {"score": 0, "lang": lang, "bots": {}}
     save_data(data)
 
   user = call.from_user
   ref_link = f"https://t.me/Robat_online_bot?start={uid}"
   
-  path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
-  if os.path.exists(path) or data.get(uid, {}).get("file_id"):
-    bot_status = "🟢 روشن و فعال روی سرور" if lang != "en" else "🟢 Running & Active on Server"
+  user_bots = data.get(uid, {}).get("bots", {})
+  if user_bots:
+    bot_status = f"🟢 روشن و فعال ({len(user_bots)} ربات روی سرور)" if lang != "en" else f"🟢 Running ({len(user_bots)} bots on server)"
   else:
     bot_status = "🔴 غیرفعال (بدون ربات)" if lang != "en" else "🔴 Inactive (No Bot)"
 
@@ -538,6 +541,9 @@ def select_plan_callback(call):
 
   bot.answer_callback_query(call.id)
   
+  if uid not in data:
+    data[uid] = {"score": score, "lang": lang, "bots": {}}
+  
   data[uid]["pending_cost"] = cost
   data[uid]["pending_duration"] = duration
   save_data(data)
@@ -567,52 +573,52 @@ def delete_bot_callback(call):
   lang = data.get(uid, {}).get("lang", "dr")
   bot.answer_callback_query(call.id)
   
-  # پیدا کردن تمام فایل‌های ربات مربوط به این کاربر در پوشه
-  user_bot_files = [f for f in os.listdir(USER_BOTS_DIR) if f.startswith(f"{uid}_") and f.endswith(".py")]
+  user_bots = data.get(uid, {}).get("bots", {})
   
-  has_process = uid in active_user_processes
-  
-  if not user_bot_files and not has_process:
-    msg_text = "❌ You have no active bots on the server." if lang == "en" else "❌ شما هیچ ربات فعالی روی سرور ندارید."
+  # سازگاری با ساختار قبلی داده‌ها اگر وجود داشته باشد
+  if not user_bots:
+    legacy_files = [f for f in os.listdir(USER_BOTS_DIR) if f.startswith(f"{uid}_") and f.endswith(".py")]
+    if legacy_files:
+      user_bots = {}
+      for lf in legacy_files:
+        b_id = lf.replace("_bot.py", "")
+        user_bots[b_id] = {"file_name": b_id.replace(f"{uid}_", "")}
+
+  if not user_bots:
+    msg_text = "❌ شما هیچ ربات فعالی روی سرور ندارید." if lang != "en" else "❌ You have no active bots."
     bot.send_message(call.message.chat.id, msg_text, reply_markup=get_main_menu(lang))
     return
 
   markup = types.InlineKeyboardMarkup(row_width=1)
   
-  # ایجاد دکمه برای هر ربات پیدا شده
-  for b_file in user_bot_files:
-    bot_identifier = b_file.replace("_bot.py", "")
-    markup.add(types.InlineKeyboardButton(f"🤖 ربات: {bot_identifier} (حذف و توقف)", callback_data=f"confirm_del_bot_{bot_identifier}"))
+  for b_unique_id, b_info in user_bots.items():
+    b_name = b_info.get("file_name", b_unique_id)
+    markup.add(types.InlineKeyboardButton(f"🤖 ربات: {b_name} (حذف و توقف)", callback_data=f"confirm_del_bot_{b_unique_id}"))
     
-  markup.add(types.InlineKeyboardButton("🔙 انصراف" if lang != "en" else "🔙 Cancel", callback_data="cancel_delete"))
+  markup.add(types.InlineKeyboardButton("🔙 انصراف", callback_data="cancel_delete"))
 
   text = (
       "🗑️ **مدیریت و حذف ربات:**\n\n"
       "لیست ربات‌های فعال شما روی سرور:\n"
       "👇 برای حذف و توقف هر کدام روی آن کلیک کنید:"
-  ) if lang != "en" else (
-      "🗑️ **Manage & Delete Bot:**\n\n"
-      "Your active bots on the server:\n"
-      "👇 Click below to delete and stop it:"
   )
-  
   bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_bot_"))
 def confirm_delete_bot_callback(call):
   uid = str(call.from_user.id)
-  target_bot_id = call.data.replace("confirm_del_bot_", "")
+  target_bot_unique_id = call.data.replace("confirm_del_bot_", "")
   data = load_data()
   lang = data.get(uid, {}).get("lang", "dr")
   bot.answer_callback_query(call.id)
   
-  path = os.path.join(USER_BOTS_DIR, f"{target_bot_id}_bot.py")
+  path = os.path.join(USER_BOTS_DIR, f"{target_bot_unique_id}_bot.py")
 
-  if target_bot_id in active_user_processes:
+  if target_bot_unique_id in active_user_processes:
     try:
-      active_user_processes[target_bot_id].terminate()
-      del active_user_processes[target_bot_id]
+      active_user_processes[target_bot_unique_id].terminate()
+      del active_user_processes[target_bot_unique_id]
     except:
       pass
 
@@ -622,14 +628,14 @@ def confirm_delete_bot_callback(call):
     except:
       pass
 
-  if target_bot_id in data:
-    data[target_bot_id]["file_id"] = None
-    data[target_bot_id]["expire_time"] = None
-    save_data(data)
+  if uid in data and "bots" in data[uid]:
+    if target_bot_unique_id in data[uid]["bots"]:
+      del data[uid]["bots"][target_bot_unique_id]
+      save_data(data)
 
-  msg_text = "🗑️ Your bot has been deleted and stopped." if lang == "en" else "🗑️ ربات مورد نظر با موفقیت از سرور پاک شد و متوقف گردید."
+  msg_text = "🗑️ ربات مورد نظر با موفقیت از سرور پاک شد و متوقف گردید."
   bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id)
-  bot.send_message(call.message.chat.id, "منوی اصلی:" if lang != "en" else "Main Menu:", reply_markup=get_main_menu(lang))
+  bot.send_message(call.message.chat.id, "منوی اصلی:", reply_markup=get_main_menu(lang))
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
@@ -948,7 +954,7 @@ def manage_score(message):
   amount = int(args[2])
   data = load_data()
   if target_uid not in data:
-    data[target_uid] = {"score": 0, "lang": "dr", "file_id": None, "expire_time": None}
+    data[target_uid] = {"score": 0, "lang": "dr", "bots": {}}
   data[target_uid]["score"] += amount
   save_data(data)
   bot.reply_to(message, f"✅ امتیاز اضافه شد. موجودی جدید: {data[target_uid]['score']}")
@@ -960,7 +966,6 @@ def check_code_syntax(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
       code_content = f.read()
     
-    # تست کامپایل کد برای یافتن خطاهای نگارشی و سینتکسی
     compile(code_content, file_path, "exec")
     return True, None
   except Exception as e:
@@ -990,38 +995,45 @@ def handle_docs_from_step(message):
     return
 
   file_id = message.document.file_id
+  file_name = message.document.file_name.replace(".py", "")
+  
+  # ایجاد شناسه یکتا برای ربات جدید کاربر
+  bot_unique_id = f"{uid}_{file_name}"
+
   file_info = bot.get_file(file_id)
   downloaded_file = bot.download_file(file_info.file_path)
   
-  path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
+  path = os.path.join(USER_BOTS_DIR, f"{bot_unique_id}_bot.py")
   with open(path, "wb") as f:
     f.write(downloaded_file)
 
-  # بررسی خطاهای سینتکسی یا کدی پیش از اجرا
   is_valid, error_message = check_code_syntax(path)
   if not is_valid:
     if os.path.exists(path):
       os.remove(path)
       
     error_report = (
-        f"❌ **کد نویسی شما دارای خطاست! لطفاً مشکل زیر را برطرف کرده و دوباره فایل اصلاح شده را ارسال کنید:**\n\n"
-        f"```text\n{error_message}\n```"
-    ) if lang != "en" else (
-        f"❌ **Your code contains errors! Please fix the issue below and send it again:**\n\n"
-        f"```text\n{error_message}\n```"
+        f"❌ **کد نویسی شما دارای خطاست!**\n\n```text\n{error_message}\n```"
     )
     bot.send_message(message.chat.id, error_report, parse_mode="Markdown")
     return
 
   process = subprocess.Popen(["python3", path])
-  active_user_processes[uid] = process
+  active_user_processes[bot_unique_id] = process
 
   if uid not in data:
-    data[uid] = {"score": 0, "lang": lang}
-    
+    data[uid] = {"score": 0, "lang": lang, "bots": {}}
+  
+  if "bots" not in data[uid]:
+    data[uid]["bots"] = {}
+
   expire_time = time.time() + duration
-  data[uid]["file_id"] = file_id
-  data[uid]["expire_time"] = expire_time
+  data[uid]["bots"][bot_unique_id] = {
+      "file_name": file_name,
+      "file_id": file_id,
+      "expire_time": expire_time
+  }
+  
   data[uid]["score"] -= cost
   
   if "pending_cost" in data[uid]:
@@ -1031,13 +1043,7 @@ def handle_docs_from_step(message):
     
   save_data(data)
 
-  success_text = (
-      f"🚀 **Congratulations! Your bot is now online** ✨\n\n"
-      f"🤖 Your bot has been activated on the server and {cost} score was deducted."
-  ) if lang == "en" else (
-      f"🚀 **تبریک! ربات شما با موفقیت آنلاین و روشن شد** ✨\n\n"
-      f"🤖 ربات شما روی سرور فعال شد و مقدار {cost} امتیاز از حساب شما کسر گردید."
-  )
+  success_text = f"🚀 **تبریک! ربات ({file_name}) با موفقیت آنلاین و روشن شد** ✨"
   bot.send_message(message.chat.id, success_text, reply_markup=get_main_menu(lang), parse_mode="Markdown")
 
   try:
@@ -1045,20 +1051,19 @@ def handle_docs_from_step(message):
         chat_id=int(uid),
         text=(
             "🤖 **اطلاعیه مهم سیستم:**\n\n"
-            "ربات شما با موفقیت توسط **ریس شاهد** آنلاین و روی سرور فعال گردید! ✨\n\n"
+            f"ربات شما ({file_name}) با موفقیت توسط **ریس شاهد** آنلاین و روی سرور فعال گردید! ✨\n\n"
             "💬 اگر می‌خواهید ربات‌های بیشتری بسازید یا سفارشی‌سازی کنید، لطفاً از طریق بخش **پشتیبانی** با ریس شاهد در ارتباط باشید."
         ),
         parse_mode="Markdown"
     )
   except Exception as e:
-    print(f"Could not send notification directly to user bot chat: {e}")
+    print(f"Could not send notification directly to user: {e}")
 
 
 if __name__ == "__main__":
   print("Bot Manager is running...")
   load_admins()
   
-  # استارت کردن ترد پس‌زمینه برای بررسی انقضای زمان ربات‌ها
   checker_thread = threading.Thread(target=background_expiration_checker, daemon=True)
   checker_thread.start()
 
@@ -1068,35 +1073,40 @@ if __name__ == "__main__":
         saved_data = json.load(f)
         current_time = time.time()
         for user_id, user_info in saved_data.items():
-          expire_time = user_info.get("expire_time")
+          bots_dict = user_info.get("bots", {})
           
-          # اگر زمان انقضا گذشته باشد، ربات را استارت نمی‌کنیم و پاکسازی می‌کنیم
-          if expire_time and current_time >= expire_time:
-            user_info["file_id"] = None
-            user_info["expire_time"] = None
-            print(f"Bot for user {user_id} expired while offline.")
-            continue
+          # اگر ساختار جدید چند رباتی بود
+          if bots_dict:
+            for b_unique_id, b_data in list(bots_dict.items()):
+              expire_time = b_data.get("expire_time")
+              if expire_time and current_time >= expire_time:
+                del bots_dict[b_unique_id]
+                continue
+              
+              bot_path = os.path.join(USER_BOTS_DIR, f"{b_unique_id}_bot.py")
+              if os.path.exists(bot_path):
+                try:
+                  proc = subprocess.Popen(["python3", bot_path])
+                  active_user_processes[b_unique_id] = proc
+                except Exception as e:
+                  print(f"Failed to restart bot {b_unique_id}: {e}")
+          
+          # سازگاری با ساختار قدیمی تک رباتی
+          else:
+            expire_time = user_info.get("expire_time")
+            if expire_time and current_time >= expire_time:
+              user_info["file_id"] = None
+              user_info["expire_time"] = None
+              continue
 
-          bot_path = os.path.join(USER_BOTS_DIR, f"{user_id}_bot.py")
-          if os.path.exists(bot_path):
-            try:
-              proc = subprocess.Popen(["python3", bot_path])
-              active_user_processes[user_id] = proc
-              print(f"Restored and started bot for user: {user_id}")
-            except Exception as e:
-              print(f"Failed to restart bot for {user_id}: {e}")
-          
-          elif user_info.get("file_id"):
-            try:
-              f_info = bot.get_file(user_info["file_id"])
-              d_file = bot.download_file(f_info.file_path)
-              with open(bot_path, "wb") as bf:
-                bf.write(d_file)
-              proc = subprocess.Popen(["python3", bot_path])
-              active_user_processes[user_id] = proc
-              print(f"Restored and started bot via file_id for user: {user_id}")
-            except Exception as e:
-              print(f"Failed to restore bot via file_id for {user_id}: {e}")
+            bot_path = os.path.join(USER_BOTS_DIR, f"{user_id}_bot.py")
+            if os.path.exists(bot_path):
+              try:
+                proc = subprocess.Popen(["python3", bot_path])
+                active_user_processes[user_id] = proc
+              except Exception as e:
+                print(f"Failed to restart legacy bot for {user_id}: {e}")
+
         save_data(saved_data)
     except Exception as e:
       print(f"Error loading saved bots on startup: {e}")
