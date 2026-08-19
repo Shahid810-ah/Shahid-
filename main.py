@@ -575,13 +575,20 @@ def delete_bot_callback(call):
   
   user_bots = data.get(uid, {}).get("bots", {})
   
+  # اگر در دیتابیس ثبت نشده بود، از روی فایل‌های موجود در پوشه شناسایی کن
   if not user_bots:
     legacy_files = [f for f in os.listdir(USER_BOTS_DIR) if f.startswith(f"{uid}_") and f.endswith(".py")]
     if legacy_files:
       user_bots = {}
       for lf in legacy_files:
-        b_id = lf.replace("_bot.py", "")
-        user_bots[b_id] = {"file_name": b_id.replace(f"{uid}_", "")}
+        b_unique_id = lf.replace("_bot.py", "")
+        b_name = b_unique_id.replace(f"{uid}_", "")
+        user_bots[b_unique_id] = {"file_name": b_name}
+      
+      if uid not in data:
+        data[uid] = {"score": 0, "lang": lang, "bots": {}}
+      data[uid]["bots"] = user_bots
+      save_data(data)
 
   if not user_bots:
     msg_text = "❌ شما هیچ ربات فعالی روی سرور ندارید." if lang != "en" else "❌ You have no active bots."
@@ -597,10 +604,13 @@ def delete_bot_callback(call):
   markup.add(types.InlineKeyboardButton("🔙 انصراف", callback_data="cancel_delete"))
 
   text = (
-      "🗑️ **مدیریت و حذف ربات:**\n\n"
-      "لیست ربات‌های فعال شما روی سرور:\n"
+      f"🗑️ **مدیریت و حذف ربات:**\n\n"
+      f"📊 تعداد ربات‌های روشن شما روی سرور: **{len(user_bots)}** ربات\n\n"
       "👇 برای حذف و توقف هر کدام روی آن کلیک کنید:"
+  ) if lang != "en" else (
+      f"🗑️ **Bot Management:**\n\nActive bots: **{len(user_bots)}**\nSelect to delete:"
   )
+  
   bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 
@@ -1100,12 +1110,6 @@ if __name__ == "__main__":
                   print(f"Failed to restart bot {b_unique_id}: {e}")
           
           else:
-            expire_time = user_info.get("expire_time")
-            if expire_time and current_time >= expire_time:
-              user_info["file_id"] = None
-              user_info["expire_time"] = None
-              continue
-
             bot_path = os.path.join(USER_BOTS_DIR, f"{user_id}_bot.py")
             if os.path.exists(bot_path):
               try:
