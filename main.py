@@ -575,7 +575,6 @@ def delete_bot_callback(call):
   
   user_bots = data.get(uid, {}).get("bots", {})
   
-  # سازگاری با ساختار قبلی داده‌ها اگر وجود داشته باشد
   if not user_bots:
     legacy_files = [f for f in os.listdir(USER_BOTS_DIR) if f.startswith(f"{uid}_") and f.endswith(".py")]
     if legacy_files:
@@ -619,23 +618,32 @@ def confirm_delete_bot_callback(call):
     try:
       active_user_processes[target_bot_unique_id].terminate()
       del active_user_processes[target_bot_unique_id]
-    except:
-      pass
+    except Exception as e:
+      print(f"Error terminating process {target_bot_unique_id}: {e}")
 
   if os.path.exists(path):
     try:
       os.remove(path)
-    except:
-      pass
+    except Exception as e:
+      print(f"Error removing file {path}: {e}")
 
   if uid in data and "bots" in data[uid]:
     if target_bot_unique_id in data[uid]["bots"]:
       del data[uid]["bots"][target_bot_unique_id]
       save_data(data)
 
-  msg_text = "🗑️ ربات مورد نظر با موفقیت از سرور پاک شد و متوقف گردید."
-  bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id)
-  bot.send_message(call.message.chat.id, "منوی اصلی:", reply_markup=get_main_menu(lang))
+  success_msg = (
+      "🗑️ ربات مورد نظر با موفقیت از روی سرور متوقف و پاک شد."
+      if lang != "en"
+      else "🗑️ The selected bot has been successfully stopped and deleted."
+  )
+  
+  try:
+    bot.edit_message_text(success_msg, call.message.chat.id, call.message.message_id)
+  except Exception:
+    bot.send_message(call.message.chat.id, success_msg)
+    
+  send_main_menu(call.message.chat.id, lang)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
@@ -644,10 +652,12 @@ def cancel_delete_callback(call):
   data = load_data()
   lang = data.get(uid, {}).get("lang", "dr")
   bot.answer_callback_query(call.id)
+  
   try:
     bot.delete_message(call.message.chat.id, call.message.message_id)
-  except:
+  except Exception:
     pass
+    
   send_main_menu(call.message.chat.id, lang)
 
 
@@ -997,7 +1007,6 @@ def handle_docs_from_step(message):
   file_id = message.document.file_id
   file_name = message.document.file_name.replace(".py", "")
   
-  # ایجاد شناسه یکتا برای ربات جدید کاربر
   bot_unique_id = f"{uid}_{file_name}"
 
   file_info = bot.get_file(file_id)
@@ -1075,7 +1084,6 @@ if __name__ == "__main__":
         for user_id, user_info in saved_data.items():
           bots_dict = user_info.get("bots", {})
           
-          # اگر ساختار جدید چند رباتی بود
           if bots_dict:
             for b_unique_id, b_data in list(bots_dict.items()):
               expire_time = b_data.get("expire_time")
@@ -1091,7 +1099,6 @@ if __name__ == "__main__":
                 except Exception as e:
                   print(f"Failed to restart bot {b_unique_id}: {e}")
           
-          # سازگاری با ساختار قدیمی تک رباتی
           else:
             expire_time = user_info.get("expire_time")
             if expire_time and current_time >= expire_time:
