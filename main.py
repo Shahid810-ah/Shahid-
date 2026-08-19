@@ -596,9 +596,10 @@ def delete_bot_callback(call):
 
   markup = types.InlineKeyboardMarkup(row_width=1)
   
-  for b_unique_id, b_info in user_bots.items():
-    b_name = b_info.get("file_name", b_unique_id)
-    markup.add(types.InlineKeyboardButton(f"🤖 ربات: {b_name} (حذف و توقف)", callback_data=f"confirm_del_bot_{b_unique_id}"))
+  # استفاده از ایندکس عددی برای جلوگیری از خطای طولانی بودن کاراکترهای کلید در تلگرام
+  for idx, (b_unique_id, b_info) in enumerate(user_bots.items()):
+    b_name = b_info.get("file_name", "ربات")
+    markup.add(types.InlineKeyboardButton(f"🤖 ربات: {b_name} (حذف و توقف)", callback_data=f"delbot_{idx}"))
     
   markup.add(types.InlineKeyboardButton("🔙 انصراف", callback_data="cancel_delete"))
 
@@ -613,46 +614,63 @@ def delete_bot_callback(call):
   bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_bot_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delbot_"))
 def confirm_delete_bot_callback(call):
   uid = str(call.from_user.id)
-  target_bot_unique_id = call.data.replace("confirm_del_bot_", "")
   data = load_data()
   lang = data.get(uid, {}).get("lang", "dr")
-  bot.answer_callback_query(call.id)
-  
-  path = os.path.join(USER_BOTS_DIR, f"{target_bot_unique_id}_bot.py")
-
-  if target_bot_unique_id in active_user_processes:
-    try:
-      active_user_processes[target_bot_unique_id].terminate()
-      del active_user_processes[target_bot_unique_id]
-    except Exception as e:
-      print(f"Error terminating process {target_bot_unique_id}: {e}")
-
-  if os.path.exists(path):
-    try:
-      os.remove(path)
-    except Exception as e:
-      print(f"Error removing file {path}: {e}")
-
-  if uid in data and "bots" in data[uid]:
-    if target_bot_unique_id in data[uid]["bots"]:
-      del data[uid]["bots"][target_bot_unique_id]
-      save_data(data)
-
-  success_msg = (
-      "🗑️ ربات مورد نظر با موفقیت از روی سرور متوقف و پاک شد."
-      if lang != "en"
-      else "🗑️ The selected bot has been successfully stopped and deleted."
-  )
   
   try:
-    bot.edit_message_text(success_msg, call.message.chat.id, call.message.message_id)
-  except Exception:
-    bot.send_message(call.message.chat.id, success_msg)
+    idx = int(call.data.split("_")[1])
+    user_bots = data.get(uid, {}).get("bots", {})
+    bot_keys = list(user_bots.keys())
     
-  send_main_menu(call.message.chat.id, lang)
+    if idx < 0 or idx >= len(bot_keys):
+      bot.answer_callback_query(call.id, "❌ ربات مورد نظر یافت نشد!", show_alert=True)
+      return
+
+    target_bot_unique_id = bot_keys[idx]
+    b_info = user_bots[target_bot_unique_id]
+    b_name = b_info.get("file_name", "ربات")
+    
+    path = os.path.join(USER_BOTS_DIR, f"{target_bot_unique_id}_bot.py")
+
+    if target_bot_unique_id in active_user_processes:
+      try:
+        active_user_processes[target_bot_unique_id].terminate()
+        del active_user_processes[target_bot_unique_id]
+      except Exception as e:
+        print(f"Error terminating process {target_bot_unique_id}: {e}")
+
+    if os.path.exists(path):
+      try:
+        os.remove(path)
+      except Exception as e:
+        print(f"Error removing file {path}: {e}")
+
+    if uid in data and "bots" in data[uid]:
+      if target_bot_unique_id in data[uid]["bots"]:
+        del data[uid]["bots"][target_bot_unique_id]
+        save_data(data)
+
+    bot.answer_callback_query(call.id, f"✅ ربات {b_name} با موفقیت حذف شد.")
+    
+    success_msg = (
+        f"🗑️ ربات ({b_name}) با موفقیت از روی سرور متوقف و پاک شد."
+        if lang != "en"
+        else f"🗑️ The bot ({b_name}) has been successfully stopped and deleted."
+    )
+    
+    try:
+      bot.edit_message_text(success_msg, call.message.chat.id, call.message.message_id)
+    except Exception:
+      bot.send_message(call.message.chat.id, success_msg)
+      
+    send_main_menu(call.message.chat.id, lang)
+
+  except Exception as e:
+    print(f"Error in delete bot: {e}")
+    bot.answer_callback_query(call.id, "❌ خطایی رخ داد!", show_alert=True)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
@@ -1014,7 +1032,6 @@ def handle_docs_from_step(message):
   file_id = message.document.file_id
   raw_file_name = message.document.file_name.replace(".py", "")
   
-  # اصلاح نام فایل برای جلوگیری از داشتن فاصله و کاراکترهای مشکل‌ساز در Callback Data
   file_name = "".join([c if c.isalnum() or c == '_' else '_' for c in raw_file_name])
   if not file_name:
     file_name = "bot"
