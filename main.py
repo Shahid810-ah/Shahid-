@@ -544,11 +544,12 @@ def select_plan_callback(call):
   if uid not in data:
     data[uid] = {"score": score, "lang": lang, "bots": {}}
   
+  # فقط ذخیره اطلاعات پلن و درخواست فایل (بدون روشن کردن ربات)
   data[uid]["pending_cost"] = cost
   data[uid]["pending_duration"] = duration
   save_data(data)
 
-  prompt_text = f"📂 لطفا فایل سورس ربات خود (با فرمت `.py`) را ارسال کنید:\n*(هزینه این پکیج: {cost} امتیاز)*" if lang != "en" else f"📂 Please send your bot file (`.py`):\n*(Cost: {cost} score)*"
+  prompt_text = f"📂 لطفا فایل سورس ربات خود (با پسوند `.py`) را ارسال کنید:\n*(هزینه این پکیج: {cost} امتیاز - پس از ارسال فایل ربات شما روشن خواهد شد)*" if lang != "en" else f"📂 Please send your bot file (`.py`):\n*(Cost: {cost} score)*"
   msg = bot.send_message(call.message.chat.id, prompt_text, parse_mode="Markdown")
   bot.register_next_step_handler(msg, handle_docs_from_step)
 
@@ -596,7 +597,6 @@ def delete_bot_callback(call):
 
   markup = types.InlineKeyboardMarkup(row_width=1)
   
-  # استفاده از ایندکس عددی برای جلوگیری از خطای طولانی بودن کاراکترهای کلید در تلگرام
   for idx, (b_unique_id, b_info) in enumerate(user_bots.items()):
     b_name = b_info.get("file_name", "ربات")
     markup.add(types.InlineKeyboardButton(f"🤖 ربات: {b_name} (حذف و توقف)", callback_data=f"delbot_{idx}"))
@@ -1017,9 +1017,14 @@ def handle_docs_from_step(message):
     bot.reply_to(message, "❌ Join channels first!" if lang == "en" else "❌ ابتدا باید در کانال‌ها عضو شوید!")
     return
 
-  cost = data.get(uid, {}).get("pending_cost", 50)
-  duration = data.get(uid, {}).get("pending_duration", 24 * 3600)
-  
+  cost = data.get(uid, {}).get("pending_cost")
+  duration = data.get(uid, {}).get("pending_duration")
+
+  # بررسی اینکه آیا کاربر اول پلن زمانی را انتخاب کرده است یا خیر
+  if cost is None or duration is None:
+    bot.reply_to(message, "❌ لطفاً ابتدا از منوی «آنلاین کردن ربات»، مدت زمان فعال‌سازی را انتخاب کنید.")
+    return
+
   if data.get(uid, {}).get("score", 0) < cost:
     msg_text = f"❌ Not enough score! Need {cost} score." if lang == "en" else f"❌ امتیاز شما برای این پکیج کافی نیست ({cost} امتیاز لازم است)."
     bot.reply_to(message, msg_text)
@@ -1056,6 +1061,7 @@ def handle_docs_from_step(message):
     bot.send_message(message.chat.id, error_report, parse_mode="Markdown")
     return
 
+  # روشن کردن ربات پس از ارسال موفقیت‌آمیز فایل و تأیید سورس
   process = subprocess.Popen(["python3", path])
   active_user_processes[bot_unique_id] = process
 
