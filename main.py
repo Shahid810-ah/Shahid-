@@ -567,31 +567,33 @@ def delete_bot_callback(call):
   lang = data.get(uid, {}).get("lang", "dr")
   bot.answer_callback_query(call.id)
   
-  path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
+  # پیدا کردن تمام فایل‌های ربات مربوط به این کاربر در پوشه
+  user_bot_files = [f for f in os.listdir(USER_BOTS_DIR) if f.startswith(f"{uid}_") and f.endswith(".py")]
   
   has_process = uid in active_user_processes
-  has_file = os.path.exists(path)
   
-  if not has_process and not has_file:
+  if not user_bot_files and not has_process:
     msg_text = "❌ You have no active bots on the server." if lang == "en" else "❌ شما هیچ ربات فعالی روی سرور ندارید."
     bot.send_message(call.message.chat.id, msg_text, reply_markup=get_main_menu(lang))
     return
 
   markup = types.InlineKeyboardMarkup(row_width=1)
-  bot_label = "🤖 ربات فعال شما (حذف و توقف)" if lang != "en" else "🤖 Your Active Bot (Delete & Stop)"
-  markup.add(types.InlineKeyboardButton(bot_label, callback_data=f"confirm_del_bot_{uid}"))
+  
+  # ایجاد دکمه برای هر ربات پیدا شده
+  for b_file in user_bot_files:
+    bot_identifier = b_file.replace("_bot.py", "")
+    markup.add(types.InlineKeyboardButton(f"🤖 ربات: {bot_identifier} (حذف و توقف)", callback_data=f"confirm_del_bot_{bot_identifier}"))
+    
   markup.add(types.InlineKeyboardButton("🔙 انصراف" if lang != "en" else "🔙 Cancel", callback_data="cancel_delete"))
 
   text = (
       "🗑️ **مدیریت و حذف ربات:**\n\n"
       "لیست ربات‌های فعال شما روی سرور:\n"
-      "• ربات اختصاصی شما\n\n"
-      "👇 برای حذف و توقف کامل روی گزینه‌ی زیر کلیک کنید:"
+      "👇 برای حذف و توقف هر کدام روی آن کلیک کنید:"
   ) if lang != "en" else (
       "🗑️ **Manage & Delete Bot:**\n\n"
       "Your active bots on the server:\n"
-      "• Your custom bot\n\n"
-      "👇 Click below to delete and stop it completely:"
+      "👇 Click below to delete and stop it:"
   )
   
   bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
@@ -600,16 +602,17 @@ def delete_bot_callback(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_bot_"))
 def confirm_delete_bot_callback(call):
   uid = str(call.from_user.id)
+  target_bot_id = call.data.replace("confirm_del_bot_", "")
   data = load_data()
   lang = data.get(uid, {}).get("lang", "dr")
   bot.answer_callback_query(call.id)
   
-  path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
+  path = os.path.join(USER_BOTS_DIR, f"{target_bot_id}_bot.py")
 
-  if uid in active_user_processes:
+  if target_bot_id in active_user_processes:
     try:
-      active_user_processes[uid].terminate()
-      del active_user_processes[uid]
+      active_user_processes[target_bot_id].terminate()
+      del active_user_processes[target_bot_id]
     except:
       pass
 
@@ -619,12 +622,12 @@ def confirm_delete_bot_callback(call):
     except:
       pass
 
-  if uid in data:
-    data[uid]["file_id"] = None
-    data[uid]["expire_time"] = None
+  if target_bot_id in data:
+    data[target_bot_id]["file_id"] = None
+    data[target_bot_id]["expire_time"] = None
     save_data(data)
 
-  msg_text = "🗑️ Your bot has been deleted and stopped." if lang == "en" else "🗑️ ربات شما با موفقیت از سرور پاک شد و متوقف گردید."
+  msg_text = "🗑️ Your bot has been deleted and stopped." if lang == "en" else "🗑️ ربات مورد نظر با موفقیت از سرور پاک شد و متوقف گردید."
   bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id)
   bot.send_message(call.message.chat.id, "منوی اصلی:" if lang != "en" else "Main Menu:", reply_markup=get_main_menu(lang))
 
