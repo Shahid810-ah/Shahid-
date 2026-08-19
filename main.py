@@ -1,6 +1,8 @@
 import json
 import os
 import subprocess
+import threading
+import time
 import telebot
 from telebot import types
 
@@ -174,6 +176,56 @@ def send_main_menu(chat_id, lang="dr"):
   bot.send_message(chat_id, t["welcome_menu"], reply_markup=get_main_menu(lang), parse_mode="Markdown")
 
 
+# ترد بررسی‌کننده زمان انقضای ربات‌ها (خاموش‌سازی خودکار)
+def background_expiration_checker():
+  while True:
+    try:
+      data = load_data()
+      current_time = time.time()
+      updated = False
+
+      for uid, user_info in list(data.items()):
+        expire_time = user_info.get("expire_time")
+        if expire_time and current_time >= expire_time:
+          path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
+          
+          if uid in active_user_processes:
+            try:
+              active_user_processes[uid].terminate()
+              del active_user_processes[uid]
+            except Exception as e:
+              print(f"Error terminating expired process for {uid}: {e}")
+
+          if os.path.exists(path):
+            try:
+              os.remove(path)
+            except Exception as e:
+              print(f"Error removing expired file for {uid}: {e}")
+
+          user_info["file_id"] = None
+          user_info["expire_time"] = None
+          updated = True
+
+          lang = user_info.get("lang", "dr")
+          expired_msg = (
+              "⏳ **مدت زمان فعال‌سازی ربات شما به پایان رسید و ربات خاموش شد.**\n\n"
+              "برای روشن کردن مجدد آن، لطفاً از منوی «آنلاین کردن ربات» اقدام فرمایید."
+          ) if lang != "en" else (
+              "⏳ **Your bot's active duration has expired and it has been stopped.**"
+          )
+          try:
+            bot.send_message(int(uid), expired_msg, parse_mode="Markdown")
+          except:
+            pass
+
+      if updated:
+        save_data(data)
+    except Exception as e:
+      print(f"Error in expiration checker thread: {e}")
+    
+    time.sleep(60)
+
+
 @bot.message_handler(commands=["start"])
 def start(message):
   uid = str(message.from_user.id)
@@ -183,7 +235,7 @@ def start(message):
   is_new_user = uid not in data
 
   if is_new_user:
-    data[uid] = {"score": 0, "lang": None, "file_id": None}
+    data[uid] = {"score": 0, "lang": None, "file_id": None, "expire_time": None}
     if len(args) > 1:
       referrer_id = args[1]
       if referrer_id in data and referrer_id != uid:
@@ -195,7 +247,6 @@ def start(message):
           pass
     save_data(data)
 
-    # ارسال اطلاعات کاربر جدید به ادمین (بدون ارسال آیدی عددی در متن پیام)
     try:
       admins = load_admins()
       user_name = message.from_user.first_name or "بدون نام"
@@ -252,7 +303,7 @@ def set_language_callback(call):
   data = load_data()
   is_new_user = uid not in data
   if is_new_user:
-    data[uid] = {"score": 0, "file_id": None}
+    data[uid] = {"score": 0, "file_id": None, "expire_time": None}
   data[uid]["lang"] = selected_lang
   save_data(data)
 
@@ -303,7 +354,7 @@ def my_info_callback(call):
     return
 
   if uid not in data:
-    data[uid] = {"score": 0, "lang": lang, "file_id": None}
+    data[uid] = {"score": 0, "lang": lang, "file_id": None, "expire_time": None}
     save_data(data)
 
   user = call.from_user
@@ -433,17 +484,80 @@ def online_bot_callback(call):
     bot.answer_callback_query(call.id, "❌ Join channels first!" if lang == "en" else "❌ ابتدا باید در کانال‌ها عضو شوید!", show_alert=True)
     return
 
+  bot.answer_callback_query(call.id)
+  
+  markup = types.InlineKeyboardMarkup(row_width=1)
+  markup.add(
+      types.InlineKeyboardButton("⏱ ۲۴ ساعت (۵۰ امتیاز)", callback_data="plan_24h"),
+      types.InlineKeyboardButton("📅 ۷ روز (۳۵۰ امتیاز)", callback_data="plan_7d"),
+      types.InlineKeyboardButton("🗓 ۲ هفته (۷۰۰ امتیاز)", callback_data="plan_14d"),
+      types.InlineKeyboardButton("ماهانه (۱۵۰۰ امتیاز)", callback_data="plan_30d"),
+      types.InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_menu")
+  )
+  
+  text = (
+      "⏳ **انتخاب مدت زمان آنلاین ماندن ربات:**\n\n"
+      "لطفاً مدت‌زمانی که می‌خواهید ربات شما روی سرور فعال بماند را انتخاب کنید:"
+  ) if lang != "en" else (
+      "⏳ **Select Bot Online Duration:**\n\n"
+      "Please choose how long you want your bot to stay online:"
+  )
+  bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("plan_"))
+def select_plan_callback(call):
+  uid = str(call.from_user.id)
+  data = load_data()
+  lang = data.get(uid, {}).get("lang", "dr")
+  
+  plan = call.data
+  duration_map = {
+      "plan_24h": 24 * 3600,
+      "plan_7d": 7 * 24 * 3600,
+      "plan_14d": 14 * 24 * 3600,
+      "plan_30d": 30 * 24 * 3600
+  }
+  
+  cost_map = {
+      "plan_24h": 50,
+      "plan_7d": 350,
+      "plan_14d": 700,
+      "plan_30d": 1500
+  }
+  
+  cost = cost_map.get(plan, 50)
+  duration = duration_map.get(plan, 24 * 3600)
   score = data.get(uid, {}).get("score", 0)
 
-  bot.answer_callback_query(call.id)
-  if score < 50:
-    msg_text = f"❌ Not enough score! Need 50 score, you have {score}." if lang == "en" else f"❌ امتیاز شما کافی نیست!\nبرای آنلاین کردن ربات ۵۰ امتیاز نیاز دارید اما امتیاز فعلی شما {score} است."
+  if score < cost:
+    msg_text = f"❌ Not enough score! Need {cost} score." if lang == "en" else f"❌ امتیاز شما کافی نیست!\nبرای این مدت زمان {cost} امتیاز نیاز دارید اما امتیاز فعلی شما {score} است."
+    bot.answer_callback_query(call.id, "❌ امتیاز کافی نیست!", show_alert=True)
     bot.send_message(call.message.chat.id, msg_text)
     return
 
-  prompt_text = "📂 Please send your bot file (`.py`):" if lang == "en" else "📂 لطفاً فایل سورس ربات خود (با فرمت `.py`) را ارسال کنید:"
+  bot.answer_callback_query(call.id)
+  
+  data[uid]["pending_cost"] = cost
+  data[uid]["pending_duration"] = duration
+  save_data(data)
+
+  prompt_text = f"📂 لطفا فایل سورس ربات خود (با فرمت `.py`) را ارسال کنید:\n*(هزینه این پکیج: {cost} امتیاز)*" if lang != "en" else f"📂 Please send your bot file (`.py`):\n*(Cost: {cost} score)*"
   msg = bot.send_message(call.message.chat.id, prompt_text, parse_mode="Markdown")
   bot.register_next_step_handler(msg, handle_docs_from_step)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+def back_to_menu_callback(call):
+  uid = str(call.from_user.id)
+  data = load_data()
+  lang = data.get(uid, {}).get("lang", "dr")
+  bot.answer_callback_query(call.id)
+  try:
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+  except:
+    pass
+  send_main_menu(call.message.chat.id, lang)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "delete_bot_menu")
@@ -454,33 +568,78 @@ def delete_bot_callback(call):
   bot.answer_callback_query(call.id)
   
   path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
-  deleted_any = False
+  
+  has_process = uid in active_user_processes
+  has_file = os.path.exists(path)
+  
+  if not has_process and not has_file:
+    msg_text = "❌ You have no active bots on the server." if lang == "en" else "❌ شما هیچ ربات فعالی روی سرور ندارید."
+    bot.send_message(call.message.chat.id, msg_text, reply_markup=get_main_menu(lang))
+    return
+
+  markup = types.InlineKeyboardMarkup(row_width=1)
+  bot_label = "🤖 ربات فعال شما (حذف و توقف)" if lang != "en" else "🤖 Your Active Bot (Delete & Stop)"
+  markup.add(types.InlineKeyboardButton(bot_label, callback_data=f"confirm_del_bot_{uid}"))
+  markup.add(types.InlineKeyboardButton("🔙 انصراف" if lang != "en" else "🔙 Cancel", callback_data="cancel_delete"))
+
+  text = (
+      "🗑️ **مدیریت و حذف ربات:**\n\n"
+      "لیست ربات‌های فعال شما روی سرور:\n"
+      "• ربات اختصاصی شما\n\n"
+      "👇 برای حذف و توقف کامل روی گزینه‌ی زیر کلیک کنید:"
+  ) if lang != "en" else (
+      "🗑️ **Manage & Delete Bot:**\n\n"
+      "Your active bots on the server:\n"
+      "• Your custom bot\n\n"
+      "👇 Click below to delete and stop it completely:"
+  )
+  
+  bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_del_bot_"))
+def confirm_delete_bot_callback(call):
+  uid = str(call.from_user.id)
+  data = load_data()
+  lang = data.get(uid, {}).get("lang", "dr")
+  bot.answer_callback_query(call.id)
+  
+  path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
 
   if uid in active_user_processes:
     try:
       active_user_processes[uid].terminate()
       del active_user_processes[uid]
-      deleted_any = True
     except:
       pass
 
   if os.path.exists(path):
     try:
       os.remove(path)
-      deleted_any = True
     except:
       pass
 
   if uid in data:
     data[uid]["file_id"] = None
+    data[uid]["expire_time"] = None
     save_data(data)
 
-  if deleted_any:
-    msg_text = "🗑️ Your bot has been deleted and stopped." if lang == "en" else "🗑️ ربات شما با موفقیت از سرور پاک شد و متوقف گردید."
-    bot.send_message(call.message.chat.id, msg_text, reply_markup=get_main_menu(lang))
-  else:
-    msg_text = "❌ You have no active bots on the server." if lang == "en" else "❌ شما هیچ ربات فعالی روی سرور ندارید."
-    bot.send_message(call.message.chat.id, msg_text, reply_markup=get_main_menu(lang))
+  msg_text = "🗑️ Your bot has been deleted and stopped." if lang == "en" else "🗑️ ربات شما با موفقیت از سرور پاک شد و متوقف گردید."
+  bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id)
+  bot.send_message(call.message.chat.id, "منوی اصلی:" if lang != "en" else "Main Menu:", reply_markup=get_main_menu(lang))
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
+def cancel_delete_callback(call):
+  uid = str(call.from_user.id)
+  data = load_data()
+  lang = data.get(uid, {}).get("lang", "dr")
+  bot.answer_callback_query(call.id)
+  try:
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+  except:
+    pass
+  send_main_menu(call.message.chat.id, lang)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "support_btn")
@@ -542,7 +701,6 @@ def admin_reply_to_user(message):
       lines = replied_msg.text.split("\n")
       for line in lines:
         if "UserID:" in line:
-          # استخراج دقیق فقط ارقام آیدی عددی
           target_uid = "".join(filter(str.isdigit, line))
           break
 
@@ -787,10 +945,23 @@ def manage_score(message):
   amount = int(args[2])
   data = load_data()
   if target_uid not in data:
-    data[target_uid] = {"score": 0, "lang": "dr", "file_id": None}
+    data[target_uid] = {"score": 0, "lang": "dr", "file_id": None, "expire_time": None}
   data[target_uid]["score"] += amount
   save_data(data)
   bot.reply_to(message, f"✅ امتیاز اضافه شد. موجودی جدید: {data[target_uid]['score']}")
+
+
+def check_code_syntax(file_path):
+  """بررسی صحت سینتکس فایل پایتون پیش از اجرا"""
+  try:
+    with open(file_path, "r", encoding="utf-8") as f:
+      code_content = f.read()
+    
+    # تست کامپایل کد برای یافتن خطاهای نگارشی و سینتکسی
+    compile(code_content, file_path, "exec")
+    return True, None
+  except Exception as e:
+    return False, str(e)
 
 
 @bot.message_handler(content_types=["document"])
@@ -803,34 +974,66 @@ def handle_docs_from_step(message):
     bot.reply_to(message, "❌ Join channels first!" if lang == "en" else "❌ ابتدا باید در کانال‌ها عضو شوید!")
     return
 
-  if data.get(uid, {}).get("score", 0) < 50:
-    msg_text = "❌ Not enough score! Need 50 score." if lang == "en" else "❌ امتیاز شما برای آنلاین کردن ربات کافی نیست (۵۰ امتیاز لازم است)."
+  cost = data.get(uid, {}).get("pending_cost", 50)
+  duration = data.get(uid, {}).get("pending_duration", 24 * 3600)
+  
+  if data.get(uid, {}).get("score", 0) < cost:
+    msg_text = f"❌ Not enough score! Need {cost} score." if lang == "en" else f"❌ امتیاز شما برای این پکیج کافی نیست ({cost} امتیاز لازم است)."
     bot.reply_to(message, msg_text)
+    return
+
+  if not message.document.file_name.endswith(".py"):
+    bot.reply_to(message, "❌ لطفاً فقط فایل با پسوند `.py` ارسال کنید." if lang != "en" else "❌ Please send only `.py` files.")
     return
 
   file_id = message.document.file_id
   file_info = bot.get_file(file_id)
   downloaded_file = bot.download_file(file_info.file_path)
+  
   path = os.path.join(USER_BOTS_DIR, f"{uid}_bot.py")
   with open(path, "wb") as f:
     f.write(downloaded_file)
+
+  # بررسی خطاهای سینتکسی یا کدی پیش از اجرا
+  is_valid, error_message = check_code_syntax(path)
+  if not is_valid:
+    if os.path.exists(path):
+      os.remove(path)
+      
+    error_report = (
+        f"❌ **کد نویسی شما دارای خطاست! لطفاً مشکل زیر را برطرف کرده و دوباره فایل اصلاح شده را ارسال کنید:**\n\n"
+        f"```text\n{error_message}\n```"
+    ) if lang != "en" else (
+        f"❌ **Your code contains errors! Please fix the issue below and send it again:**\n\n"
+        f"```text\n{error_message}\n```"
+    )
+    bot.send_message(message.chat.id, error_report, parse_mode="Markdown")
+    return
 
   process = subprocess.Popen(["python3", path])
   active_user_processes[uid] = process
 
   if uid not in data:
     data[uid] = {"score": 0, "lang": lang}
+    
+  expire_time = time.time() + duration
   data[uid]["file_id"] = file_id
-
-  data[uid]["score"] -= 50
+  data[uid]["expire_time"] = expire_time
+  data[uid]["score"] -= cost
+  
+  if "pending_cost" in data[uid]:
+    del data[uid]["pending_cost"]
+  if "pending_duration" in data[uid]:
+    del data[uid]["pending_duration"]
+    
   save_data(data)
 
   success_text = (
-      "🚀 **Congratulations! Your bot is now online** ✨\n\n"
-      "🤖 Your bot has been activated on the server and 50 score was deducted."
+      f"🚀 **Congratulations! Your bot is now online** ✨\n\n"
+      f"🤖 Your bot has been activated on the server and {cost} score was deducted."
   ) if lang == "en" else (
-      "🚀 **تبریک! ربات شما با موفقیت آنلاین و روشن شد** ✨\n\n"
-      "🤖 ربات شما روی سرور فعال شد و ۵۰ امتیاز از حساب شما کسر گردید."
+      f"🚀 **تبریک! ربات شما با موفقیت آنلاین و روشن شد** ✨\n\n"
+      f"🤖 ربات شما روی سرور فعال شد و مقدار {cost} امتیاز از حساب شما کسر گردید."
   )
   bot.send_message(message.chat.id, success_text, reply_markup=get_main_menu(lang), parse_mode="Markdown")
 
@@ -851,11 +1054,26 @@ def handle_docs_from_step(message):
 if __name__ == "__main__":
   print("Bot Manager is running...")
   load_admins()
+  
+  # استارت کردن ترد پس‌زمینه برای بررسی انقضای زمان ربات‌ها
+  checker_thread = threading.Thread(target=background_expiration_checker, daemon=True)
+  checker_thread.start()
+
   if os.path.exists(DATA_FILE):
     try:
       with open(DATA_FILE, "r", encoding="utf-8") as f:
         saved_data = json.load(f)
+        current_time = time.time()
         for user_id, user_info in saved_data.items():
+          expire_time = user_info.get("expire_time")
+          
+          # اگر زمان انقضا گذشته باشد، ربات را استارت نمی‌کنیم و پاکسازی می‌کنیم
+          if expire_time and current_time >= expire_time:
+            user_info["file_id"] = None
+            user_info["expire_time"] = None
+            print(f"Bot for user {user_id} expired while offline.")
+            continue
+
           bot_path = os.path.join(USER_BOTS_DIR, f"{user_id}_bot.py")
           if os.path.exists(bot_path):
             try:
@@ -876,6 +1094,7 @@ if __name__ == "__main__":
               print(f"Restored and started bot via file_id for user: {user_id}")
             except Exception as e:
               print(f"Failed to restore bot via file_id for {user_id}: {e}")
+        save_data(saved_data)
     except Exception as e:
       print(f"Error loading saved bots on startup: {e}")
 
